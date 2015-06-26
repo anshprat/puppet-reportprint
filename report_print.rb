@@ -58,9 +58,10 @@ def print_report_summary(report)
   puts
 end
 
-def print_report_metrics(report)
+def print_report_metrics(report, file='')
+  print_slow_files = false
   puts color(:bold, "Report Metrics:")
-  puts
+  puts file
 
   padding = report.metrics.map{|i, m| m.values}.flatten(1).map{|i, m, v| m.size}.sort[-1] + 6
 
@@ -69,12 +70,19 @@ def print_report_metrics(report)
 
     metric.values.sort_by{|i, m, v| v}.reverse.each do |i, m, v|
       puts "%#{padding}s: %s" % [m, v]
+      metric_label    = @options[:metric_label]
+      metric_sublabel = @options[:metric_sublabel]
+      metric_value    = @options[:metric_value]
+      if metric_label  == metric.label  and m  == metric_sublabel and v.to_int > metric_value
+        # Print slow reports only for total time > metric_value
+        print_slow_files = true
+      end
     end
 
     puts
   end
 
-  puts
+  return print_slow_files
 end
 
 def print_summary_by_type(report)
@@ -101,7 +109,10 @@ def print_summary_by_type(report)
   puts
 end
 
-def print_slow_resources(report, number=20)
+def print_slow_resources(report, number=20, rep_file='',debug=false , resource_type=[])
+  if (debug)
+    puts "Processing #{rep_file}"
+  end
   if report.report_format < 4
     puts color(:red, "   Cannot print slow resources for report versions %d" % report.report_format)
     puts
@@ -111,15 +122,31 @@ def print_slow_resources(report, number=20)
   resources = resource_by_eval_time(report)
 
   number = resources.size if resources.size < number
+  priv_res = []
+  if @options[:report_type] == "single"
+    puts color(:bold, "Slowest %d resources by evaluation time:" % number)
+    puts
 
-  puts color(:bold, "Slowest %d resources by evaluation time:" % number)
-  puts
-
-  resources[(0-number)..-1].reverse.each do |r_name, r|
-    puts "   %7.2f %s" % [r.evaluation_time, r_name]
+    resources[(0-number)..-1].reverse.each do |r_name, r|
+      puts "   %7.2f %s" % [r.evaluation_time, r_name]
+    end
   end
-
-  puts
+  if @options[:report_type] == "combi"
+    resources[(0-number)..-1].reverse.each do |r_name, r|
+      if (resource_type.length >0)
+          resource_type.each do |res_name|
+            if (r_name.include? res_name)
+              priv_res <<  [r.evaluation_time, r_name, rep_file]
+            end
+          end
+      else
+        priv_res <<  [r.evaluation_time, r_name, rep_file]
+      end
+        
+    end
+    priv_res.sort!{|x,y| y<=>x}
+  return priv_res
+  end
 end
 
 def print_logs(report)
@@ -171,7 +198,20 @@ initialize_puppet
 
 opt = OptionParser.new
 
-@options = {:logs => false, :count => 20, :report => Puppet[:lastrunreport], :color => STDOUT.tty?}
+@options = {:logs                 => false,
+            :count                => 20,
+            :report               => Puppet[:lastrunreport],
+            :color                => STDOUT.tty?,
+            :metric_label         => "Time",
+            :metric_sublabel      => "Total",
+            :metric_value         => 20,
+            :report_type          => "single",
+            :unique               => false,
+            :debug                => false,
+            :slow_filter          => ['Package'],
+            :file_print_summary   => false,
+            :print_files          => false,
+           }
 
 opt.on("--logs", "Show logs") do |val|
   @options[:logs] = val
@@ -182,7 +222,7 @@ opt.on("--count [RESOURCES]", Integer, "Number of resources to show evaluation t
 end
 
 opt.on("--report [REPORT]", "Path to the Puppet last run report") do |val|
-  abort("Could not find report %s" % val) unless File.readable?(val)
+  #abort("Could not find report %s" % val) unless File.readable?(val)
   @options[:report] = val
 end
 
@@ -190,13 +230,78 @@ opt.on("--[no-]color", "Colorize the report") do |val|
   @options[:color] = val
 end
 
+opt.on("--metric_label [#{@options[:metric_label]}]", "First label to look for") do |val|
+  @options[:metric_label] = val
+end
+
+opt.on("--metric_sublabel [#{@options[:metric_sublabel]}]", "Sub label to look for ") do |val|
+  @options[:metric_sublabel] = val
+end
+
+opt.on("--metric_value [#{@options[:metric_value]}]", Float,  "Metric value high pass filter ") do |val|
+  @options[:metric_value] = val
+end
+
+opt.on("--report_type [#{@options[:report_type]}]", "Type of report (single|combi)") do |val|
+  @options[:report_type] = val
+end
+
+opt.on("--slow_filter #{@options[:slow_filter]}", Array, "Resource types filtered in slow report, CSV") do |val|
+  @options[:slow_filter] = val
+end
+
+opt.on("--debug [#{@options[:debug]}]","Enable debug") do |val|
+  @options[:debug] = val
+end
+
+opt.on("--unique [#{@options[:unique]}]","Print only unique resource types in slow report, only in combi mode") do |val|
+  @options[:unique] = val
+end
+
+opt.on("--file_print_summary [#{@options[:file_print_summary]}]","Print report summary in combi mode") do |val|
+  @options[:file_print_summary] = val
+end
+
+opt.on("--print_files [#{@options[:print_files]}]","Print managed files list") do |val|
+  @options[:print_files] = val
+end
+
 opt.parse!
+if @options[:report_type]  == "single"
+  report = load_report(@options[:report])
 
-report = load_report(@options[:report])
+  print_report_summary(report)
+  print_slow_files = print_report_metrics(report)
+  print_summary_by_type(report) if print_slow_files
+  print_slow_resources(report, @options[:count]) if print_slow_files
+  print_files(report, @options[:count]) if @options[:print_files]
+  print_logs(report) if @options[:logs]
+end
 
-print_report_summary(report)
-print_report_metrics(report)
-print_summary_by_type(report)
-print_slow_resources(report, @options[:count])
-print_files(report, @options[:count])
-print_logs(report) if @options[:logs]
+if @options[:report_type] == "combi" or File.directory?(@options[:report])
+  local_res = []
+  reports_l_base = "#{Puppet[:reportdir]}/"
+  if @options[:report].include? "RDIR/"
+    rep_dir = "#{reports_l_base}#{@options[:report]}"
+    rep_dir.sub!('RDIR/','')
+  else
+    rep_dir = @options[:report]
+  end
+#  puts rep_dir
+  for file in Dir.glob("#{rep_dir}")
+    report = load_report(file)
+    print_report_summary(report) if @options[:file_print_summary]
+    for el in print_slow_resources(report, @options[:count], file, @options[:debug], @options[:slow_filter])
+      local_res.push(el)
+#      puts "   %7.10f %s %s" % [el[0],el[1],el[2]]
+     end
+    print_report_metrics(report, file)
+  end
+  local_res.sort!{|x,y| y<=>x}
+  local_res.uniq!{ |el| el.fetch(1) } if @options[:unique] == true
+  local_res = local_res.take(@options[:count])
+  puts color(:bold, "Slowest %d resources by evaluation time:" % @options[:count])
+  for el in local_res
+    puts "   %7.3f %s %s" % [el[0],el[1],el[2]]
+  end
+end
