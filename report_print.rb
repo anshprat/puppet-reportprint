@@ -278,7 +278,102 @@ if @options[:report_type]  == "single"
   print_logs(report) if @options[:logs]
 end
 
-if @options[:report_type] == "combi" or File.directory?(@options[:report])
+# take the reports and process them to get the stuff I care about out
+def parse_report(report_obj)
+  report = {}
+  report['start_time']            = report_obj.time
+  report['status']                = report_obj.status
+  report['configuration_version'] = report_obj.configuration_version
+  report['metrics']               = {}
+  report['resources']             = {}
+
+  report_obj.metrics['time'].values.each do |x|
+    if x[0] == 'total'
+      report['total_time'] = x[2]
+    end
+  end
+  if report['status'] == 'failed'
+    report['resources']['failed'] = {}
+    report_obj.resource_statuses.each do |k,v| 
+      if v.failed
+        v.events.each do |x|
+          report['resources']['failed'][k] ||= []
+          report['resources']['failed'][k].push(x.message)
+        end
+      end
+      # we may have to do this in Puppet 4, but in 3, we can
+      # rely on failed to exist on the resource_status
+      #v.events do |x|
+      #  puts x.status
+      #  if x.status = 'failure'
+      #    report['resources']['failed'][k] ||= []
+      #    report['resources']['failed'][k].push(x.message)
+      #  end
+      #end 
+    end
+  end
+  report
+end
+
+def organize_reports(report_objs)
+  reports = {}
+  report_objs.each do |x|
+    reports[x['configuration_version']] ||= {}
+    reports[x['configuration_version']][x['start_time']] = x
+  end
+  reports
+end
+
+def print_single_report(reports, key)
+  times = reports[key].keys.sort
+  times.each do |t|
+    report = reports[key][t]
+    puts "  Started at #{t}, took #{report['total_time']}, result #{report['status']}"
+    if report['status'] == 'failed'
+      report['resources']['failed'].each do |k,v|
+        puts "    #{k}: #{v}"
+      end
+    end
+  end
+end
+
+def print_organized_reports(reports)
+  special_keys  = ['settings', 'packages', 'bootstrap']
+
+  special_keys.each do |k|
+    puts "For run type: #{k}"
+    if reports[k]
+      if reports[k].size != 1
+        puts "Expected 1 run, found #{reports[k].size}"
+      end
+      print_single_report(reports, k)
+    else
+      puts "  Did not find expected report: #{k}"
+    end
+  end
+  # None should not exist?
+  if reports['None']
+    puts "Unexpected run type: None"
+    print_single_report(reports, 'None')
+  end
+
+  versions = reports.keys - special_keys - ['None']
+
+  versions.each do |x|
+    puts "Found #{reports[x].size} report(s) for version #{x}"
+    print_single_report(reports, x)
+  end
+end
+
+if @options[:report_type] == 'dans_type'
+  rep_dir = '/var/lib/puppet/reports/'
+  reports = []
+  for file in Dir.glob("#{rep_dir}/*/*")
+    report = parse_report(load_report(file))
+    reports.push(report) 
+  end
+  print_organized_reports(organize_reports(reports))
+elsif @options[:report_type] == "combi" or File.directory?(@options[:report])
   local_res = []
   reports_l_base = "#{Puppet[:reportdir]}/"
   if @options[:report].include? "RDIR/"
